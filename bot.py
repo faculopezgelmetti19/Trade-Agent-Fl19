@@ -2,7 +2,6 @@ import os
 import telebot
 from google import genai
 import ccxt
-
 # 1. CARGA DE VARIABLES DESDE RAILWAY
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
