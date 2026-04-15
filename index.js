@@ -24,6 +24,7 @@ const state = {
 
 function getMarketSnapshot(symbol = "BTCUSDT", timeframe = "15m") {
   const lastPrice = 65000 + Math.floor(Math.random() * 3000 - 1500);
+
   return {
     symbol,
     timeframe,
@@ -113,11 +114,12 @@ Motivo: ${trade.rationale}`;
 }
 
 async function runAnalysis(chatId) {
-  const market = getMarketSnapshot("BTCUSDT", "15m");
-  const account = getAccountStatus();
-  const positions = getOpenPositions();
+  try {
+    const market = getMarketSnapshot("BTCUSDT", "15m");
+    const account = getAccountStatus();
+    const positions = getOpenPositions();
 
-  const prompt = `
+    const prompt = `
 Sos un trade agent conservador.
 Analizá este mercado y decidí si hay trade o no.
 
@@ -130,15 +132,17 @@ ${JSON.stringify(account, null, 2)}
 Open positions:
 ${JSON.stringify(positions, null, 2)}
 
-Respondé SOLO en JSON válido con este formato:
+Respondé SOLO en JSON válido con uno de estos formatos:
+
+Si hay trade:
 {
-  "has_trade": true o false,
+  "has_trade": true,
   "symbol": "BTCUSDT",
-  "side": "LONG o SHORT",
-  "entry_price": numero,
-  "stop_loss": numero,
-  "take_profit": numero,
-  "confidence": numero,
+  "side": "LONG",
+  "entry_price": 65000,
+  "stop_loss": 64500,
+  "take_profit": 66000,
+  "confidence": 75,
   "rationale": "texto"
 }
 
@@ -149,60 +153,67 @@ Si no hay trade:
 }
 `;
 
-  const response = await openai.responses.create({
-    model: "gpt-5",
-    input: prompt
-  });
+    const response = await openai.responses.create({
+      model: "gpt-4.1",
+      input: prompt
+    });
 
-  const text = response.output_text?.trim() || "";
-  let parsed;
+    const text = response.output_text?.trim() || "";
+    let parsed;
 
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    await bot.sendMessage(chatId, `El modelo respondió algo no parseable:\n\n${text}`);
-    return;
-  }
-
-  if (!parsed.has_trade) {
-    await bot.sendMessage(chatId, `No hay trade.\n\nMotivo: ${parsed.rationale}`);
-    return;
-  }
-
-  const risk = validateRisk(parsed);
-  if (!risk.approved) {
-    await bot.sendMessage(chatId, `Trade bloqueado por riesgo.\n\nMotivo: ${risk.reason}`);
-    return;
-  }
-
-  const tradeId = `trd_${Date.now()}`;
-  const trade = {
-    trade_id: tradeId,
-    symbol: parsed.symbol,
-    side: parsed.side,
-    entry_price: parsed.entry_price,
-    stop_loss: parsed.stop_loss,
-    take_profit: parsed.take_profit,
-    confidence: parsed.confidence,
-    rationale: parsed.rationale,
-    quantity: risk.quantity,
-    risk_pct: risk.risk_pct,
-    risk_reward: risk.risk_reward,
-    status: "PENDING_APPROVAL"
-  };
-
-  state.pendingTrades.set(tradeId, trade);
-
-  await bot.sendMessage(chatId, buildTradeMessage(trade), {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "✅ Aprobar", callback_data: `approve:${tradeId}` },
-          { text: "❌ Rechazar", callback_data: `reject:${tradeId}` }
-        ]
-      ]
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      await bot.sendMessage(chatId, `El modelo respondió algo no parseable:\n\n${text}`);
+      return;
     }
-  });
+
+    if (!parsed.has_trade) {
+      await bot.sendMessage(chatId, `No hay trade.\n\nMotivo: ${parsed.rationale}`);
+      return;
+    }
+
+    const risk = validateRisk(parsed);
+    if (!risk.approved) {
+      await bot.sendMessage(chatId, `Trade bloqueado por riesgo.\n\nMotivo: ${risk.reason}`);
+      return;
+    }
+
+    const tradeId = `trd_${Date.now()}`;
+    const trade = {
+      trade_id: tradeId,
+      symbol: parsed.symbol,
+      side: parsed.side,
+      entry_price: parsed.entry_price,
+      stop_loss: parsed.stop_loss,
+      take_profit: parsed.take_profit,
+      confidence: parsed.confidence,
+      rationale: parsed.rationale,
+      quantity: risk.quantity,
+      risk_pct: risk.risk_pct,
+      risk_reward: risk.risk_reward,
+      status: "PENDING_APPROVAL"
+    };
+
+    state.pendingTrades.set(tradeId, trade);
+
+    await bot.sendMessage(chatId, buildTradeMessage(trade), {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "✅ Aprobar", callback_data: `approve:${tradeId}` },
+            { text: "❌ Rechazar", callback_data: `reject:${tradeId}` }
+          ]
+        ]
+      }
+    });
+  } catch (error) {
+    console.error("Error en runAnalysis:", error);
+    await bot.sendMessage(
+      chatId,
+      `Error en análisis:\n${error?.message || "desconocido"}`
+    );
+  }
 }
 
 bot.onText(/\/start/, async (msg) => {
@@ -239,7 +250,10 @@ bot.on("callback_query", async (query) => {
       }
     );
 
-    await bot.sendMessage(query.message.chat.id, `✅ Operación aprobada y ejecutada en paper mode.\n\nTrade ID: ${tradeId}`);
+    await bot.sendMessage(
+      query.message.chat.id,
+      `✅ Operación aprobada y ejecutada en paper mode.\n\nTrade ID: ${tradeId}`
+    );
   }
 
   if (action === "reject") {
@@ -253,7 +267,10 @@ bot.on("callback_query", async (query) => {
       }
     );
 
-    await bot.sendMessage(query.message.chat.id, `❌ Operación rechazada.\n\nTrade ID: ${tradeId}`);
+    await bot.sendMessage(
+      query.message.chat.id,
+      `❌ Operación rechazada.\n\nTrade ID: ${tradeId}`
+    );
   }
 
   await bot.answerCallbackQuery(query.id);
