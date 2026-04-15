@@ -1,70 +1,55 @@
 import os
 import telebot
-import google.generativeai as genai
+from google import genai
 from binance.client import Client
 
-# 1. CARGA DE VARIABLES DESDE RAILWAY
+# 1. CARGA DE VARIABLES
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 BINANCE_KEY = os.getenv('BINANCE_KEY')
 BINANCE_SECRET = os.getenv('BINANCE_SECRET')
 
-# 2. CONFIGURACIÓN DE LOS SERVICIOS
+# 2. CONFIGURACIÓN
 bot = telebot.TeleBot(TOKEN)
-genai.configure(api_key=GEMINI_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+# Nueva forma de configurar Gemini (2026)
+client_gemini = genai.Client(api_key=GEMINI_KEY)
 
-# Conectamos a la Testnet de Binance
-client = Client(BINANCE_KEY, BINANCE_SECRET, testnet=True)
+# Intentamos conectar a Binance forzando el servidor global
+try:
+    client_binance = Client(BINANCE_KEY, BINANCE_SECRET, testnet=True)
+    # Cambiamos la URL de la API por si Railway está en zona restringida
+    client_binance.API_URL = 'https://testnet.binance.vision/api' 
+except Exception as e:
+    print(f"Error inicial de Binance: {e}")
 
-# 3. FUNCIONES DE APOYO
+# 3. LÓGICA
 def obtener_analisis_gemini(precio):
-    prompt = (f"El precio actual de Bitcoin es {precio} USDT. "
-              f"Analiza si es buen momento para comprar. "
-              f"Responde corto: primero la palabra COMPRAR o ESPERAR, "
-              f"y luego una sola frase de por qué.")
-    response = gemini_model.generate_content(prompt)
+    prompt = f"El precio de BTC es {precio}. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
+    response = client_gemini.models.generate_content(model="gemini-1.5-flash", contents=prompt)
     return response.text
 
-# 4. COMANDOS DE TELEGRAM
-@bot.message_handler(commands=['start', 'analizar'])
+@bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
-    # Verificación de seguridad: solo te responde a vos
-    if str(message.chat.id) != str(CHAT_ID):
-        return
-
-    bot.send_message(CHAT_ID, "🔎 Consultando al mercado y a Gemini...")
-    
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.send_message(CHAT_ID, "🔎 Analizando...")
     try:
-        avg_price = client.get_avg_price(symbol='BTCUSDT')['price']
-        analisis = obtener_analisis_gemini(avg_price)
-        
-        bot.send_message(CHAT_ID, f"📊 **BTC/USDT:** {avg_price}\n\n🤖 **Gemini dice:** {analisis}")
-        
+        precio = client_binance.get_symbol_ticker(symbol="BTCUSDT")['price']
+        analisis = obtener_analisis_gemini(precio)
+        bot.send_message(CHAT_ID, f"📊 Precio: {precio}\n🤖 {analisis}")
         if "COMPRAR" in analisis.upper():
-            bot.send_message(CHAT_ID, "⚠️ Para ejecutar la compra de 0.001 BTC, responde: **ok**")
+            bot.send_message(CHAT_ID, "⚠️ Responde 'ok' para ejecutar.")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error de conexión con el Broker: {e}\n(Es probable que la ubicación del servidor de Railway esté bloqueada por Binance)")
 
 @bot.message_handler(func=lambda message: message.text.lower() == "ok")
-def ejecutar_compra(message):
-    if str(message.chat.id) != str(CHAT_ID):
-        return
-
-    bot.send_message(CHAT_ID, "⚙️ Procesando orden en Binance Testnet...")
+def ejecutar(message):
+    if str(message.chat.id) != str(CHAT_ID): return
     try:
-        # Ejecuta una compra a precio de mercado
-        order = client.create_order(
-            symbol='BTCUSDT',
-            side='BUY',
-            type='MARKET',
-            quantity=0.001  # Cantidad de prueba
-        )
-        bot.send_message(CHAT_ID, f"✅ **¡COMPRA REALIZADA!**\nID de Orden: {order['orderId']}")
+        order = client_binance.create_order(symbol='BTCUSDT', side='BUY', type='MARKET', quantity=0.001)
+        bot.send_message(CHAT_ID, f"✅ Comprado! ID: {order['orderId']}")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error al comprar: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error en la orden: {e}")
 
-# 5. ENCENDER EL BOT
-print("TradeAgent encendido...")
+print("Bot activo...")
 bot.polling()
