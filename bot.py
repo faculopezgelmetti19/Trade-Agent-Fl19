@@ -10,7 +10,7 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 BINGX_KEY = os.getenv('BINGX_KEY')
 BINGX_SECRET = os.getenv('BINGX_SECRET')
 
-# CONFIGURACIÓN GEMINI (FORZANDO API ESTABLE V1)
+# CONFIGURACIÓN GEMINI (FORZANDO LA RUTA ESTABLE)
 genai.configure(api_key=GEMINI_KEY)
 
 bot = telebot.TeleBot(TOKEN)
@@ -23,13 +23,17 @@ exchange = ccxt.bingx({
 exchange.set_sandbox_mode(True)
 
 def obtener_analisis_gemini(precio):
-    # Forzamos el modelo gemini-1.5-flash-latest que es el más compatible
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
-    
-    # Intentamos la generación
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        # Usamos el modelo estable. Si gemini-1.5-flash falla, el código probará gemini-1.0-pro
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        # Plan B por si el modelo 1.5 tiene restricciones de región en Railway
+        model = genai.GenerativeModel('gemini-1.0-pro')
+        response = model.generate_content(prompt)
+        return response.text
 
 @bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
@@ -46,8 +50,7 @@ def enviar_analisis(message):
         if "COMPRAR" in analisis.upper():
             bot.send_message(CHAT_ID, "⚠️ Escribí **ok** para comprar.")
     except Exception as e:
-        # Si Gemini falla, al menos te doy el precio de BingX
-        bot.send_message(CHAT_ID, f"📊 Precio: {precio if 'precio' in locals() else 'Error'}\n❌ Error IA: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
 @bot.message_handler(func=lambda message: message.text.lower() == "ok")
 def ejecutar(message):
