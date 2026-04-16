@@ -3,15 +3,17 @@ import telebot
 import google.generativeai as genai
 import ccxt
 
-# 1. VARIABLES (Asegurate que estén en Railway)
+# 1. VARIABLES
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 BINGX_KEY = os.getenv('BINGX_KEY')
 BINGX_SECRET = os.getenv('BINGX_SECRET')
 
-# CONFIGURACIÓN GEMINI (FORZANDO VERSIÓN ESTABLE)
+# CONFIGURACIÓN GEMINI (FORZANDO API ESTABLE V1)
 genai.configure(api_key=GEMINI_KEY)
+
+bot = telebot.TeleBot(TOKEN)
 
 # 2. CONFIGURACIÓN BINGX
 exchange = ccxt.bingx({
@@ -20,19 +22,19 @@ exchange = ccxt.bingx({
 })
 exchange.set_sandbox_mode(True)
 
-bot = telebot.TeleBot(TOKEN)
-
 def obtener_analisis_gemini(precio):
-    # Usamos la configuración más simple posible
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Forzamos el modelo gemini-1.5-flash-latest que es el más compatible
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
+    
+    # Intentamos la generación
     response = model.generate_content(prompt)
     return response.text
 
 @bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    bot.send_message(CHAT_ID, "🔎 Consultando mercado...")
+    bot.send_message(CHAT_ID, "🔎 Consultando mercado y IA...")
     try:
         exchange.load_markets()
         ticker = exchange.fetch_ticker('BTC-USDT')
@@ -44,7 +46,8 @@ def enviar_analisis(message):
         if "COMPRAR" in analisis.upper():
             bot.send_message(CHAT_ID, "⚠️ Escribí **ok** para comprar.")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        # Si Gemini falla, al menos te doy el precio de BingX
+        bot.send_message(CHAT_ID, f"📊 Precio: {precio if 'precio' in locals() else 'Error'}\n❌ Error IA: {e}")
 
 @bot.message_handler(func=lambda message: message.text.lower() == "ok")
 def ejecutar(message):
