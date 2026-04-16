@@ -5,7 +5,7 @@ import ccxt
 import time
 import threading
 
-# --- 1. CARGA DE CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN DE VARIABLES ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GROQ_KEY = os.getenv('GROQ_API_KEY')
@@ -14,24 +14,23 @@ BX_SECRET = os.getenv('BINGX_SECRET')
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. CONEXIÓN A BINGX ---
-# Usamos un bloque try para evitar que el bot muera si las keys están mal
+# --- 2. CONEXIÓN A BINGX (MODO FUTUROS PERPETUOS) ---
 try:
-    if not BX_KEY or not BX_SECRET:
-        raise ValueError("No se encontraron las credenciales BINGX_KEY o BINGX_SECRET en Railway")
-    
     exchange = ccxt.bingx({
         'apiKey': BX_KEY,
         'secret': BX_SECRET,
         'enableRateLimit': True,
+        'options': {
+            'defaultType': 'swap',  # Crucial: apunta a Futuros Perpetuos
+        }
     })
-    exchange.set_sandbox_mode(True) # MODO DEMO (VST)
-    print("✅ Conexión con BingX establecida")
+    exchange.set_sandbox_mode(True)  # Mantenemos modo Demo (VST)
+    print("✅ Conectado a BingX Futuros Perpetuos")
 except Exception as e:
-    print(f"❌ Error de configuración: {e}")
+    print(f"❌ Error de conexión: {e}")
     exchange = None
 
-# --- 3. LÓGICA DE INTELIGENCIA ARTIFICIAL ---
+# --- 3. LÓGICA DE INTELIGENCIA ARTIFICIAL (GROQ) ---
 def obtener_analisis_ia(moneda, precio):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
@@ -39,7 +38,7 @@ def obtener_analisis_ia(moneda, precio):
         "model": "llama-3.3-70b-versatile",
         "messages": [{
             "role": "user", 
-            "content": f"BTC/USDT está a {precio}. Analiza tendencia 1min. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA'. Motivo 3 palabras."
+            "content": f"BTC/USDT está a {precio}. Analiza tendencia rápida. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA'. Motivo 3 palabras."
         }]
     }
     try:
@@ -48,48 +47,50 @@ def obtener_analisis_ia(moneda, precio):
     except:
         return "NADA"
 
-# --- 4. MOTOR DE TRADING AUTOMÁTICO ---
+# --- 4. MOTOR AUTOMÁTICO (LOOP DE TRADING) ---
 def motor_trading():
-    print("🤖 Motor Automático Encendido...")
+    print("🤖 Motor Automático en Futuros Encendido...")
     while True:
         try:
-            if exchange is None:
+            if not exchange:
                 time.sleep(10)
                 continue
 
-            # 1. Obtener saldo (VST en Demo)
+            # 1. Obtener saldo de la cuenta de Futuros
             balance = exchange.fetch_balance()
-            moneda_vst = 'VST' # Cambiar a 'USDT' si pasas a real
-            saldo_total = float(balance.get('total', {}).get(moneda_vst, 0))
+            # En BingX Perpetuo Demo, el saldo total suele venir en 'VST'
+            saldo_neto = float(balance.get('VST', {}).get('total', 0))
+            
+            # Si el saldo neto sigue marcando 0, intentamos rastrear en el total general
+            if saldo_neto == 0:
+                saldo_neto = float(balance.get('total', {}).get('VST', 0))
 
-            # Solo operamos si tenemos más de 10 VST
-            if saldo_total > 10:
-                # 2. Escaneo de 100 monedas por volumen
+            if saldo_neto > 10:
+                # 2. Escaneo de las 100 con más volumen
                 tickers = exchange.fetch_tickers()
-                candidatos = [t for t in tickers.items() if t[0].endswith('/USDT')]
+                # Filtramos pares que terminen en USDT o que sean swaps
+                candidatos = [t for t in tickers.items() if 'USDT' in t[0]]
                 top_100 = sorted(candidatos, key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
 
                 for simbolo, datos in top_100:
                     precio = datos['last']
-                    analisis = obtener_analisis_ia(simbolo, precio)
+                    decision = obtener_analisis_ia(simbolo, precio)
 
-                    if "COMPRAR" in analisis.upper():
-                        monto_invertir = saldo_total * 0.20 # 20% del neto
-                        cantidad = monto_invertir / precio
+                    if "COMPRAR" in decision.upper():
+                        monto_a_invertir = saldo_neto * 0.20 # 20% del neto
                         
-                        # Ejecutar orden de mercado
+                        # Calculamos cantidad (simplificado para el ejemplo)
+                        cantidad = monto_a_invertir / precio
+                        
+                        # Ejecutar orden de mercado en Futuros (Abre un LONG)
                         order = exchange.create_market_buy_order(simbolo, cantidad)
                         
-                        msg = (f"🎯 **COMPRA EJECUTADA**\n"
-                               f"💎 Moneda: {simbolo}\n"
-                               f"💵 Inversión: ${monto_invertir:.2f}\n"
-                               f"🤖 IA: {analisis}")
-                        bot.send_message(CHAT_ID, msg)
-                        break # Un trade por minuto para evitar spam
+                        bot.send_message(CHAT_ID, f"🎯 **COMPRA FUTUROS (LONG)**\n💎 Moneda: {simbolo}\n💵 Inversión: ${monto_a_invertir:.2f}\n🤖 IA: {decision}")
+                        break # Un trade por ciclo para no saturar
             
-            time.sleep(60) # Pausa de 1 minuto entre escaneos
+            time.sleep(60) # Revisar cada 1 minuto
         except Exception as e:
-            print(f"Error en el motor: {e}")
+            print(f"Error en motor: {e}")
             time.sleep(30)
 
 # --- 5. COMANDOS TELEGRAM ---
@@ -97,21 +98,19 @@ def motor_trading():
 def cmd_saldo(message):
     try:
         balance = exchange.fetch_balance()
-        vst = balance.get('total', {}).get('VST', 0)
-        bot.send_message(CHAT_ID, f"💰 **Saldo Demo (VST):** {vst:.2f}")
+        # Intentamos obtener VST de varias formas por si la API cambia el formato
+        vst = balance.get('VST', {}).get('total', balance.get('total', {}).get('VST', 0))
+        
+        bot.send_message(CHAT_ID, f"💰 **Saldo Futuros Perpetuo (VST):** {vst:.2f}")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ No pude leer el saldo: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error al leer saldo de Futuros: {e}")
 
 # --- INICIO ---
 if __name__ == "__main__":
-    # Mensaje de arranque
     try:
-        bot.send_message(CHAT_ID, "🔌 Bot reconectado a BingX. Analizando mercado cada 1 min...")
+        bot.send_message(CHAT_ID, "🔌 Bot Activo en BingX Futuros Perpetuos.\nModo automático: ENCENDIDO (20% por trade).")
     except:
         pass
 
-    # Hilo para el motor de trading
     threading.Thread(target=motor_trading, daemon=True).start()
-    
-    # Hilo para Telegram
     bot.polling(none_stop=True)
