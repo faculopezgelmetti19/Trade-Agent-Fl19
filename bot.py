@@ -10,8 +10,12 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 BINGX_KEY = os.getenv('BINGX_KEY')
 BINGX_SECRET = os.getenv('BINGX_SECRET')
 
-# CONFIGURACIÓN GEMINI (FORZANDO LA RUTA ESTABLE)
+# CONFIGURACIÓN GEMINI (PARCHE DE VERSIÓN)
 genai.configure(api_key=GEMINI_KEY)
+
+# ESTA LÍNEA ES EL SECRETO: Forzamos a la librería a usar la versión estable v1
+from google.generativeai.types import RequestOptions
+options = RequestOptions(api_version='v1')
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -23,17 +27,13 @@ exchange = ccxt.bingx({
 exchange.set_sandbox_mode(True)
 
 def obtener_analisis_gemini(precio):
-    try:
-        # Usamos el modelo estable. Si gemini-1.5-flash falla, el código probará gemini-1.0-pro
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
-        response = model.generate_content(prompt)
-        return response.text
-    except:
-        # Plan B por si el modelo 1.5 tiene restricciones de región en Railway
-        model = genai.GenerativeModel('gemini-1.0-pro')
-        response = model.generate_content(prompt)
-        return response.text
+    # Usamos gemini-1.5-flash con las opciones de la versión v1
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
+    
+    # Pasamos las opciones de la versión estable aquí
+    response = model.generate_content(prompt, request_options=options)
+    return response.text
 
 @bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
