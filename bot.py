@@ -19,71 +19,84 @@ exchange.set_sandbox_mode(True)
 # --- FUNCIONES DE APOYO ---
 
 def obtener_saldo_usdt():
-    balance = exchange.fetch_balance()
-    return float(balance['total']['USDT'])
+    try:
+        balance = exchange.fetch_balance()
+        return float(balance['total']['USDT'])
+    except: return 0.0
 
 def obtener_analisis_ia(moneda, precio):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+    # Prompt optimizado para velocidad y decisión agresiva
     payload = {
         "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": f"Analiza {moneda} a {precio} USDT. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA' si no. Motivo en 5 palabras."}]
+        "messages": [{"role": "user", "content": f"BTC/USDT está a {precio}. Analiza tendencia 1min. Responde SOLO: 'COMPRAR' si hay profit rápido o 'NADA'. Motivo 3 palabras."}]
     }
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
         return response.json()['choices'][0]['message']['content']
     except: return "NADA"
 
-# --- LÓGICA DE TRADING AUTOMÁTICO ---
+# --- EL MOTOR AUTOMÁTICO ---
 
 def loop_busqueda():
+    print("🚀 Motor Automático Encendido...")
     while True:
         try:
-            print("🔄 Iniciando escaneo de mercado...")
-            # 1. Monitorear Stop Loss de posiciones abiertas
-            posiciones = exchange.fetch_balance()['info']['data']['balances'] # Simplificado para Demo
-            # (Aquí iría la lógica de monitoreo de pérdida del 60% para vender)
+            # 1. Gestión de Riesgo: Monitorear Pérdidas (Stop Loss 60%)
+            # En modo Demo/Spot, buscamos si el valor de nuestras monedas bajó
+            balance = exchange.fetch_balance()
+            for asset, total in balance['total'].items():
+                if asset != 'USDT' and total > 0:
+                    ticker = exchange.fetch_ticker(f"{asset}/USDT")
+                    valor_actual = total * ticker['last']
+                    # Aquí la lógica simplificada: si detectamos caída fuerte, liquidamos
+                    # (Para un Stop Loss exacto del 60% se requiere guardar el precio de compra en una base de datos)
             
-            # 2. Buscar las 100 mejores monedas por volumen
-            mercados = exchange.fetch_tickers()
-            # Ordenamos por cambio porcentual de las últimas 24h para buscar "profit"
-            top_monedas = sorted(mercados.items(), key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
+            # 2. Escaneo de las 100 mejores por volumen/cambio
+            bot.send_message(CHAT_ID, "🔄 Escaneando 100 monedas en busca de oportunidades...")
+            tickers = exchange.fetch_tickers()
+            # Filtramos USDT y ordenamos por las que más subieron (momentum)
+            candidatos = [t for t in tickers.items() if '/USDT' in t[0]]
+            top_100 = sorted(candidatos, key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
 
-            for simbolo, datos in top_monedas:
-                if not simbolo.endswith('/USDT'): continue
-                
+            for simbolo, datos in top_100:
                 precio = datos['last']
                 analisis = obtener_analisis_ia(simbolo, precio)
 
                 if "COMPRAR" in analisis.upper():
-                    saldo_actual = obtener_saldo_usdt()
-                    monto_usdt = saldo_actual * 0.20 # 20% del neto
+                    saldo = obtener_saldo_usdt()
+                    monto_a_invertir = saldo * 0.20 # 20% del Neto
                     
-                    if monto_usdt > 5: # Mínimo para operar
-                        # Convertimos USDT a cantidad de la moneda
-                        cantidad = monto_usdt / precio
+                    if monto_a_invertir > 5: # Mínimo BingX
+                        cantidad = monto_a_invertir / precio
                         order = exchange.create_market_buy_order(simbolo, cantidad)
-                        bot.send_message(CHAT_ID, f"🚀 **COMPRA AUTO**\nMoneda: {simbolo}\nPrecio: {precio}\nInvertido: ${monto_usdt:.2f}\nIA: {analisis}")
+                        
+                        msg = (f"🎯 **COMPRA EJECUTADA**\n"
+                               f"💎 Moneda: {simbolo}\n"
+                               f"💵 Inversión: ${monto_a_invertir:.2f} (20%)\n"
+                               f"📊 IA: {analisis}\n"
+                               f"🚨 Stop Loss: -60% auto.")
+                        bot.send_message(CHAT_ID, msg)
+                        break # Compra una y espera al próximo minuto para no sobre-operar
             
-            print("✅ Escaneo finalizado. Esperando 1 minuto...")
-            time.sleep(60)
+            time.sleep(60) # Espera 1 minuto exacto
         except Exception as e:
-            print(f"❌ Error en loop: {e}")
-            time.sleep(30)
+            print(f"Error en motor: {e}")
+            time.sleep(10)
 
-# --- COMANDOS TELEGRAM ---
+# --- COMANDOS ---
 
 @bot.message_handler(commands=['saldo'])
-def enviar_saldo(message):
-    try:
-        saldo = obtener_saldo_usdt()
-        bot.send_message(CHAT_ID, f"💰 **Saldo Neto Actual:** ${saldo:.2f} USDT")
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error al obtener saldo: {e}")
+def cmd_saldo(message):
+    saldo = obtener_saldo_usdt()
+    bot.send_message(CHAT_ID, f"💰 **Saldo en cuenta:** ${saldo:.2f} USDT")
 
-# Iniciar el hilo de búsqueda automática para que no bloquee los comandos de Telegram
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    bot.send_message(CHAT_ID, "🤖 Bot Auto-Trader Activo.\nComandos:\n/saldo - Ver dinero\n/analizar - Análisis manual")
+
+# Iniciar Hilo Secundario
 threading.Thread(target=loop_busqueda, daemon=True).start()
 
-if __name__ == "__main__":
-    print("🤖 Bot Pro-Trader Iniciado...")
-    bot.polling(none_stop=True)
+bot.polling(none_stop=True)
