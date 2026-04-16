@@ -23,7 +23,7 @@ try:
         'options': {'defaultType': 'swap'}
     })
     exchange.set_sandbox_mode(True)
-    print("✅ Conectado a BingX Futuros")
+    print("✅ Conectado a BingX Futuros (Hedge Mode compatible)")
 except Exception as e:
     print(f"❌ Error: {e}")
     exchange = None
@@ -54,7 +54,6 @@ def motor_trading():
 
             if saldo > 10:
                 tickers = exchange.fetch_tickers()
-                # Adaptamos el filtro para el formato de BingX (BTC-USDT)
                 candidatos = [t for t in tickers.items() if '-USDT' in t[0]]
                 top_100 = sorted(candidatos, key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
 
@@ -65,8 +64,11 @@ def motor_trading():
                     if "COMPRAR" in decision.upper():
                         monto = saldo * 0.20
                         cantidad = monto / precio
-                        # Usamos el símbolo tal cual viene de BingX
-                        exchange.create_market_buy_order(simbolo, cantidad)
+                        
+                        # AGREGAMOS POSITION SIDE PARA MODO COBERTURA
+                        params = {'positionSide': 'LONG'}
+                        exchange.create_market_buy_order(simbolo, cantidad, params)
+                        
                         bot.send_message(CHAT_ID, f"🎯 **COMPRA AUTO (LONG)**\n💎 {simbolo}\n💵 ${monto:.2f}\n🤖 IA: {decision}")
                         break 
             time.sleep(60)
@@ -85,11 +87,12 @@ def cmd_saldo(message):
 @bot.message_handler(commands=['test'])
 def cmd_test(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    bot.send_message(CHAT_ID, "🧪 Probando con BTC-USDT...")
+    bot.send_message(CHAT_ID, "🧪 Probando compra LONG con PositionSide...")
     try:
-        # Probamos con el formato de guion que usa BingX en su API Swap
-        order = exchange.create_market_buy_order('BTC-USDT', 0.001)
-        bot.send_message(CHAT_ID, f"✅ **¡PRUEBA EXITOSA!**\nID: {order['id']}\nPrecio: {order['price']}")
+        # PARÁMETRO CLAVE: positionSide LONG
+        params = {'positionSide': 'LONG'}
+        order = exchange.create_market_buy_order('BTC-USDT', 0.001, params)
+        bot.send_message(CHAT_ID, f"✅ **¡PRUEBA EXITOSA!**\nID: {order['id']}\nPrecio: {order['price']}\nPosición abierta en LONG.")
     except Exception as e:
         bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
