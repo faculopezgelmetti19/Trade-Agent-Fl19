@@ -13,12 +13,12 @@ BINGX_SECRET = os.getenv('BINGX_SECRET')
 bot = telebot.TeleBot(TOKEN)
 client_gemini = genai.Client(api_key=GEMINI_KEY)
 
-# 2. CONFIGURACIÓN BINGX (El broker que NO bloquea Railway)
+# 2. CONFIGURACIÓN BINGX
 exchange = ccxt.bingx({
     'apiKey': BINGX_KEY,
     'secret': BINGX_SECRET,
 })
-exchange.set_sandbox_mode(True) # Activa modo demo/testnet
+exchange.set_sandbox_mode(True)
 
 def obtener_analisis_gemini(precio):
     prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
@@ -28,25 +28,33 @@ def obtener_analisis_gemini(precio):
 @bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    bot.send_message(CHAT_ID, "🔎 Conectando con BingX...")
+    bot.send_message(CHAT_ID, "🔎 Consultando mercado en BingX...")
     try:
-        ticker = exchange.fetch_ticker('BTC/USDT')
+        # Cargamos los mercados para que CCXT sepa los nombres exactos
+        exchange.load_markets()
+        
+        # En BingX el par suele ser BTC-USDT
+        simbolo = 'BTC-USDT' 
+        ticker = exchange.fetch_ticker(simbolo)
         precio = ticker['last']
+        
         analisis = obtener_analisis_gemini(precio)
         bot.send_message(CHAT_ID, f"📊 **BTC/USDT:** {precio}\n🤖 {analisis}")
+        
         if "COMPRAR" in analisis.upper():
-            bot.send_message(CHAT_ID, "⚠️ Escribí **ok** para comprar $100 en modo demo.")
+            bot.send_message(CHAT_ID, f"⚠️ Escribí **ok** para comprar 0.0001 BTC en BingX Demo.")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error de conexión: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
 @bot.message_handler(func=lambda message: message.text.lower() == "ok")
 def ejecutar(message):
     if str(message.chat.id) != str(CHAT_ID): return
+    bot.send_message(CHAT_ID, "⚙️ Procesando orden...")
     try:
-        # En BingX Demo compramos una cantidad pequeña
-        order = exchange.create_market_buy_order('BTC/USDT', 0.001)
-        bot.send_message(CHAT_ID, f"✅ ¡Compra exitosa en BingX Demo! ID: {order['id']}")
+        # Intentamos una compra pequeña
+        order = exchange.create_market_buy_order('BTC-USDT', 0.0001)
+        bot.send_message(CHAT_ID, f"✅ ¡Compra exitosa! ID: {order['id']}")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error al ejecutar: {e}")
 
 bot.polling()
