@@ -1,6 +1,6 @@
 import os
 import telebot
-import google.generativeai as genai
+from google import genai
 import ccxt
 
 # 1. VARIABLES
@@ -10,13 +10,8 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 BINGX_KEY = os.getenv('BINGX_KEY')
 BINGX_SECRET = os.getenv('BINGX_SECRET')
 
-# CONFIGURACIÓN GEMINI (PARCHE DE VERSIÓN)
-genai.configure(api_key=GEMINI_KEY)
-
-# ESTA LÍNEA ES EL SECRETO: Forzamos a la librería a usar la versión estable v1
-from google.generativeai.types import RequestOptions
-options = RequestOptions(api_version='v1')
-
+# NUEVO CLIENTE DE GEMINI (Versión 2026)
+client = genai.Client(api_key=GEMINI_KEY)
 bot = telebot.TeleBot(TOKEN)
 
 # 2. CONFIGURACIÓN BINGX
@@ -27,18 +22,18 @@ exchange = ccxt.bingx({
 exchange.set_sandbox_mode(True)
 
 def obtener_analisis_gemini(precio):
-    # Usamos gemini-1.5-flash con las opciones de la versión v1
-    model = genai.GenerativeModel('gemini-1.5-flash')
     prompt = f"BTC está a {precio} USDT. ¿Comprar o Esperar? Responde: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase]'"
-    
-    # Pasamos las opciones de la versión estable aquí
-    response = model.generate_content(prompt, request_options=options)
+    # El nuevo método de la librería oficial
+    response = client.models.generate_content(
+        model='gemini-1.5-flash',
+        contents=prompt
+    )
     return response.text
 
 @bot.message_handler(commands=['analizar'])
 def enviar_analisis(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    bot.send_message(CHAT_ID, "🔎 Consultando mercado y IA...")
+    bot.send_message(CHAT_ID, "🔎 Consultando mercado y IA (v2)...")
     try:
         exchange.load_markets()
         ticker = exchange.fetch_ticker('BTC-USDT')
