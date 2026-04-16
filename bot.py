@@ -14,18 +14,22 @@ BX_SECRET = os.getenv('BINGX_SECRET')
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. CONEXIÓN A BINGX (MODO FUTUROS PERPETUOS) ---
+# --- 2. CONEXIÓN A BINGX (FUTUROS PERPETUOS) ---
 try:
-    exchange = ccxt.bingx({
-        'apiKey': BX_KEY,
-        'secret': BX_SECRET,
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap',  # Crucial: apunta a Futuros Perpetuos
-        }
-    })
-    exchange.set_sandbox_mode(True)  # Mantenemos modo Demo (VST)
-    print("✅ Conectado a BingX Futuros Perpetuos")
+    if not BX_KEY or not BX_SECRET:
+        print("❌ Error: Faltan credenciales BINGX_KEY o BINGX_SECRET en Railway.")
+        exchange = None
+    else:
+        exchange = ccxt.bingx({
+            'apiKey': BX_KEY,
+            'secret': BX_SECRET,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',  # Configurado para Futuros Perpetuos
+            }
+        })
+        exchange.set_sandbox_mode(True)  # MODO DEMO (VST)
+        print("✅ Conectado a BingX Futuros Perpetuos (Demo)")
 except Exception as e:
     print(f"❌ Error de conexión: {e}")
     exchange = None
@@ -38,7 +42,7 @@ def obtener_analisis_ia(moneda, precio):
         "model": "llama-3.3-70b-versatile",
         "messages": [{
             "role": "user", 
-            "content": f"BTC/USDT está a {precio}. Analiza tendencia rápida. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA'. Motivo 3 palabras."
+            "content": f"El par {moneda} está a {precio}. Analiza tendencia rápida. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA'. Motivo 3 palabras."
         }]
     }
     try:
@@ -47,7 +51,7 @@ def obtener_analisis_ia(moneda, precio):
     except:
         return "NADA"
 
-# --- 4. MOTOR AUTOMÁTICO (LOOP DE TRADING) ---
+# --- 4. MOTOR DE TRADING AUTOMÁTICO ---
 def motor_trading():
     print("🤖 Motor Automático en Futuros Encendido...")
     while True:
@@ -56,19 +60,14 @@ def motor_trading():
                 time.sleep(10)
                 continue
 
-            # 1. Obtener saldo de la cuenta de Futuros
+            # 1. Obtener saldo de la cuenta de Futuros (VST)
             balance = exchange.fetch_balance()
-            # En BingX Perpetuo Demo, el saldo total suele venir en 'VST'
-            saldo_neto = float(balance.get('VST', {}).get('total', 0))
-            
-            # Si el saldo neto sigue marcando 0, intentamos rastrear en el total general
-            if saldo_neto == 0:
-                saldo_neto = float(balance.get('total', {}).get('VST', 0))
+            saldo_total = float(balance.get('total', {}).get('VST', balance.get('VST', {}).get('total', 0)))
 
-            if saldo_neto > 10:
+            # Solo operamos si el saldo es mayor a 10 VST
+            if saldo_total > 10:
                 # 2. Escaneo de las 100 con más volumen
                 tickers = exchange.fetch_tickers()
-                # Filtramos pares que terminen en USDT o que sean swaps
                 candidatos = [t for t in tickers.items() if 'USDT' in t[0]]
                 top_100 = sorted(candidatos, key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
 
@@ -77,40 +76,52 @@ def motor_trading():
                     decision = obtener_analisis_ia(simbolo, precio)
 
                     if "COMPRAR" in decision.upper():
-                        monto_a_invertir = saldo_neto * 0.20 # 20% del neto
-                        
-                        # Calculamos cantidad (simplificado para el ejemplo)
+                        monto_a_invertir = saldo_total * 0.20 # 20% del neto
                         cantidad = monto_a_invertir / precio
                         
-                        # Ejecutar orden de mercado en Futuros (Abre un LONG)
+                        # Ejecutar Long en Futuros
                         order = exchange.create_market_buy_order(simbolo, cantidad)
                         
-                        bot.send_message(CHAT_ID, f"🎯 **COMPRA FUTUROS (LONG)**\n💎 Moneda: {simbolo}\n💵 Inversión: ${monto_a_invertir:.2f}\n🤖 IA: {decision}")
-                        break # Un trade por ciclo para no saturar
+                        bot.send_message(CHAT_ID, f"🎯 **COMPRA AUTO (LONG)**\n💎 Moneda: {simbolo}\n💵 Inversión: ${monto_a_invertir:.2f}\n🤖 IA: {decision}")
+                        break # Un trade por ciclo para control de riesgo
             
-            time.sleep(60) # Revisar cada 1 minuto
+            time.sleep(60) # Pausa de 1 minuto
         except Exception as e:
             print(f"Error en motor: {e}")
             time.sleep(30)
 
 # --- 5. COMANDOS TELEGRAM ---
+
 @bot.message_handler(commands=['saldo'])
 def cmd_saldo(message):
     try:
         balance = exchange.fetch_balance()
-        # Intentamos obtener VST de varias formas por si la API cambia el formato
-        vst = balance.get('VST', {}).get('total', balance.get('total', {}).get('VST', 0))
-        
+        vst = balance.get('total', {}).get('VST', balance.get('VST', {}).get('total', 0))
         bot.send_message(CHAT_ID, f"💰 **Saldo Futuros Perpetuo (VST):** {vst:.2f}")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error al leer saldo de Futuros: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error al leer saldo: {e}")
 
-# --- INICIO ---
+@bot.message_handler(commands=['test'])
+def cmd_test(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.send_message(CHAT_ID, "🧪 Ejecutando compra de prueba (0.001 BTC)...")
+    try:
+        # Intenta abrir un Long mínimo en BTC
+        order = exchange.create_market_buy_order('BTC/USDT', 0.001)
+        bot.send_message(CHAT_ID, f"✅ **¡PRUEBA EXITOSA!**\nID: {order['id']}\nPrecio: {order['price']}\nRevisá tus posiciones en BingX.")
+    except Exception as e:
+        bot.send_message(CHAT_ID, f"❌ Falló la prueba: {e}")
+
+# --- 6. INICIO DEL SISTEMA ---
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🔌 Bot Activo en BingX Futuros Perpetuos.\nModo automático: ENCENDIDO (20% por trade).")
+        bot.send_message(CHAT_ID, "🔌 Bot Online en BingX Futuros.\n- Escaneo: Activo (100 monedas)\n- Riesgo: 20% del neto\n- Comandos: /saldo, /test")
     except:
         pass
 
+    # Iniciar motor en segundo plano
     threading.Thread(target=motor_trading, daemon=True).start()
+    
+    # Iniciar escucha de Telegram
     bot.polling(none_stop=True)
+    
