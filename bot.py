@@ -2,8 +2,10 @@ import os
 import telebot
 import requests
 import ccxt
+import time
+import threading
 
-# --- 1. CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GROQ_KEY = os.getenv('GROQ_API_KEY')
@@ -11,77 +13,77 @@ BINGX_KEY = os.getenv('BINGX_KEY')
 BINGX_SECRET = os.getenv('BINGX_SECRET')
 
 bot = telebot.TeleBot(TOKEN)
-
-# Configuración de BingX (Modo Demo)
-exchange = ccxt.bingx({
-    'apiKey': BINGX_KEY,
-    'secret': BINGX_SECRET,
-})
+exchange = ccxt.bingx({'apiKey': BINGX_KEY, 'secret': BINGX_SECRET})
 exchange.set_sandbox_mode(True)
 
-# --- 2. LÓGICA DE IA (USANDO GROQ) ---
-def obtener_analisis_ia(precio):
+# --- FUNCIONES DE APOYO ---
+
+def obtener_saldo_usdt():
+    balance = exchange.fetch_balance()
+    return float(balance['total']['USDT'])
+
+def obtener_analisis_ia(moneda, precio):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    
-    headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json"
-    }
-    
+    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {
-                "role": "user", 
-                "content": f"BTC está a {precio} USDT. Responde corto y directo: 'ACCION: [COMPRAR/ESPERAR] - Motivo: [1 frase en español]'"
-            }
-        ]
+        "messages": [{"role": "user", "content": f"Analiza {moneda} a {precio} USDT. Responde SOLO: 'COMPRAR' si es muy alcista o 'NADA' si no. Motivo en 5 palabras."}]
     }
-
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        data = response.json()
-        return data['choices'][0]['message']['content']
-    except Exception as e:
-        return f"Error en IA (Groq): {e}"
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        return response.json()['choices'][0]['message']['content']
+    except: return "NADA"
 
-# --- 3. COMANDOS TELEGRAM ---
-@bot.message_handler(commands=['analizar'])
-def enviar_analisis(message):
-    if str(message.chat.id) != str(CHAT_ID): return
-    
-    bot.send_message(CHAT_ID, "🔎 Consultando mercado y analizando con Groq Cloud...")
-    
-    try:
-        # Obtener precio de BingX
-        exchange.load_markets()
-        ticker = exchange.fetch_ticker('BTC-USDT')
-        precio = ticker['last']
-        
-        # Obtener decisión de la IA
-        analisis = obtener_analisis_ia(precio)
-        
-        # Enviar respuesta
-        bot.send_message(CHAT_ID, f"📊 **BTC/USDT:** {precio}\n🤖 {analisis}")
-        
-        if "COMPRAR" in analisis.upper():
-            bot.send_message(CHAT_ID, "⚠️ Escribí **ok** para comprar 0.001 BTC en Demo.")
+# --- LÓGICA DE TRADING AUTOMÁTICO ---
+
+def loop_busqueda():
+    while True:
+        try:
+            print("🔄 Iniciando escaneo de mercado...")
+            # 1. Monitorear Stop Loss de posiciones abiertas
+            posiciones = exchange.fetch_balance()['info']['data']['balances'] # Simplificado para Demo
+            # (Aquí iría la lógica de monitoreo de pérdida del 60% para vender)
             
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+            # 2. Buscar las 100 mejores monedas por volumen
+            mercados = exchange.fetch_tickers()
+            # Ordenamos por cambio porcentual de las últimas 24h para buscar "profit"
+            top_monedas = sorted(mercados.items(), key=lambda x: x[1]['percentage'] or 0, reverse=True)[:100]
 
-@bot.message_handler(func=lambda message: message.text.lower() == "ok")
-def ejecutar(message):
-    if str(message.chat.id) != str(CHAT_ID): return
-    
-    bot.send_message(CHAT_ID, "⚙️ Ejecutando orden en BingX Demo...")
+            for simbolo, datos in top_monedas:
+                if not simbolo.endswith('/USDT'): continue
+                
+                precio = datos['last']
+                analisis = obtener_analisis_ia(simbolo, precio)
+
+                if "COMPRAR" in analisis.upper():
+                    saldo_actual = obtener_saldo_usdt()
+                    monto_usdt = saldo_actual * 0.20 # 20% del neto
+                    
+                    if monto_usdt > 5: # Mínimo para operar
+                        # Convertimos USDT a cantidad de la moneda
+                        cantidad = monto_usdt / precio
+                        order = exchange.create_market_buy_order(simbolo, cantidad)
+                        bot.send_message(CHAT_ID, f"🚀 **COMPRA AUTO**\nMoneda: {simbolo}\nPrecio: {precio}\nInvertido: ${monto_usdt:.2f}\nIA: {analisis}")
+            
+            print("✅ Escaneo finalizado. Esperando 1 minuto...")
+            time.sleep(60)
+        except Exception as e:
+            print(f"❌ Error en loop: {e}")
+            time.sleep(30)
+
+# --- COMANDOS TELEGRAM ---
+
+@bot.message_handler(commands=['saldo'])
+def enviar_saldo(message):
     try:
-        order = exchange.create_market_buy_order('BTC-USDT', 0.001)
-        bot.send_message(CHAT_ID, f"✅ ¡Compra exitosa!\nID: {order['id']}")
+        saldo = obtener_saldo_usdt()
+        bot.send_message(CHAT_ID, f"💰 **Saldo Neto Actual:** ${saldo:.2f} USDT")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error en BingX: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error al obtener saldo: {e}")
 
-# Inicio
+# Iniciar el hilo de búsqueda automática para que no bloquee los comandos de Telegram
+threading.Thread(target=loop_busqueda, daemon=True).start()
+
 if __name__ == "__main__":
-    print("🚀 Bot iniciado con Groq y BingX")
+    print("🤖 Bot Pro-Trader Iniciado...")
     bot.polling(none_stop=True)
