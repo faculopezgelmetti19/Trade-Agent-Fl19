@@ -19,14 +19,14 @@ try:
         'apiKey': BX_KEY,
         'secret': BX_SECRET,
         'enableRateLimit': True,
-        'options': {'defaultType': 'swap'} # Mercado de Futuros Perpetuos
+        'options': {'defaultType': 'swap'}
     })
-    exchange.set_sandbox_mode(True) # MODO DEMO
+    exchange.set_sandbox_mode(True)
 except Exception as e:
-    print(f"❌ Error de conexión: {e}")
+    print(f"❌ Error conexión: {e}")
     exchange = None
 
-# --- 2. LÓGICA IA (GROQ) ---
+# --- 2. LÓGICA IA ---
 def consultar_ia(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
@@ -39,98 +39,75 @@ def consultar_ia(prompt):
         return response.json()['choices'][0]['message']['content'].upper()
     except: return "NADA"
 
-# --- 3. MOTOR AUTOMÁTICO (COMPRA Y VENTA) ---
+# --- 3. MOTOR AUTOMÁTICO ---
 def motor_trading():
-    print("🤖 Motor Auto-Trader Activo...")
     while True:
         try:
             if not exchange: time.sleep(10); continue
 
-            # --- A: MONITOREO PARA VENTA ---
+            # VENTA AUTO
             posiciones = exchange.fetch_positions()
             activas = [p for p in posiciones if float(p.get('contracts', 0)) > 0]
-            
             for p in activas:
-                simbolo = p['symbol']
-                pnl = p['unrealizedPnl']
-                prompt_v = f"Tengo un LONG en {simbolo} con PNL: {pnl}. ¿Cerrar posición? Responde SOLO: 'CERRAR' o 'NADA'. Motivo 3 palabras."
-                
-                if "CERRAR" in consultar_ia(prompt_v):
-                    params = {'positionSide': 'LONG'}
-                    exchange.create_market_sell_order(simbolo, p['contracts'], params)
-                    bot.send_message(CHAT_ID, f"💰 **VENTA AUTO**\n💎 {simbolo}\n💵 PNL Final: {pnl} VST\n✅ Posición cerrada por la IA.")
+                if "CERRAR" in consultar_ia(f"PNL {p['unrealizedPnl']} en {p['symbol']}. ¿Cerrar? Responde SOLO: 'CERRAR' o 'NADA'"):
+                    exchange.create_market_sell_order(p['symbol'], p['contracts'], {'positionSide': 'LONG'})
+                    bot.send_message(CHAT_ID, f"💰 **VENTA AUTO:** {p['symbol']} cerrada.")
 
-            # --- B: BUSQUEDA PARA COMPRA ---
+            # COMPRA AUTO
             balance = exchange.fetch_balance()
-            saldo_disponible = float(balance.get('total', {}).get('VST', 0))
-
-            if saldo_disponible > 20:
+            saldo = float(balance.get('total', {}).get('VST', 0))
+            if saldo > 20:
                 tickers = exchange.fetch_tickers()
-                # Filtramos los pares con más volumen
-                top_mercado = sorted([t for t in tickers.items() if '-USDT' in t[0]], 
-                                    key=lambda x: x[1]['percentage'] or 0, reverse=True)[:15]
-
-                for simbolo, datos in top_mercado:
-                    precio = datos['last']
-                    prompt_c = f"Analiza {simbolo} a {precio}. ¿Comprar ahora? Responde SOLO: 'COMPRAR' o 'NADA'. Motivo 3 palabras."
-                    
-                    if "COMPRAR" in consultar_ia(prompt_c):
-                        monto = saldo_disponible * 0.15 # Usamos el 15% para diversificar más
-                        cantidad = monto / precio
-                        params = {'positionSide': 'LONG'}
-                        
-                        exchange.create_market_buy_order(simbolo, cantidad, params)
-                        bot.send_message(CHAT_ID, f"🎯 **COMPRA AUTO**\n💎 {simbolo}\n💵 Inversión: ${monto:.2f}\n🤖 IA: {prompt_c[:30]}...")
-                        break # Un trade por ciclo
-
-            time.sleep(60) # Espera 1 minuto antes de re-escanear
-        except Exception as e:
-            print(f"Error motor: {e}"); time.sleep(30)
+                top = sorted([t for t in tickers.items() if '-USDT' in t[0]], key=lambda x: x[1]['percentage'] or 0, reverse=True)[:10]
+                for simbolo, datos in top:
+                    if "COMPRAR" in consultar_ia(f"Comprar {simbolo}? Responde SOLO: 'COMPRAR' o 'NADA'"):
+                        monto = saldo * 0.15
+                        exchange.create_market_buy_order(simbolo, monto / datos['last'], {'positionSide': 'LONG'})
+                        bot.send_message(CHAT_ID, f"🎯 **COMPRA AUTO:** {simbolo}")
+                        break
+            time.sleep(60)
+        except Exception as e: print(f"Error: {e}"); time.sleep(30)
 
 # --- 4. COMANDOS ---
 
 @bot.message_handler(commands=['activos'])
 def cmd_activos(message):
     try:
-        # 1. Obtenemos balance general
         balance = exchange.fetch_balance()
-        reporte = "🏦 **MIS ACTIVOS (SPOT/BALANCE):**\n"
-        hay_activos = False
-
-        # 2. Listar monedas con saldo (VST, BTC, ETH, DOGE, etc.)
-        for asset, totals in balance.get('total', {}).items():
-            if float(totals) > 0:
-                reporte += f"• **{asset}:** {totals}\n"
-                hay_activos = True
-
-        # 3. Sumar posiciones abiertas de Futuros
-        posiciones = exchange.fetch_positions()
-        activas = [p for p in posiciones if float(p.get('contracts', 0)) > 0]
+        reporte = "🏦 **ACTIVOS:**\n"
+        for asset, total in balance.get('total', {}).items():
+            if float(total) > 0: reporte += f"• {asset}: {total}\n"
         
+        pos = exchange.fetch_positions()
+        activas = [p for p in pos if float(p.get('contracts', 0)) > 0]
         if activas:
-            reporte += "\n📊 **TRADES EN CURSO:**\n"
+            reporte += "\n📊 **POSICIONES:**\n"
             for p in activas:
-                pnl = float(p['unrealizedPnl'])
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                reporte += f"{emoji} {p['symbol']} | PNL: {pnl:.2f} VST\n"
-        
-        if not hay_activos and not activas:
-            bot.send_message(CHAT_ID, "📭 Tu cuenta está vacía.")
-        else:
-            bot.send_message(CHAT_ID, reporte)
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error al leer activos: {e}")
+                reporte += f"🔹 {p['symbol']} | PNL: {p['unrealizedPnl']} VST\n"
+        bot.send_message(CHAT_ID, reporte)
+    except: bot.send_message(CHAT_ID, "❌ Error al leer activos.")
 
-@bot.message_handler(commands=['saldo'])
-def cmd_saldo(message):
-    balance = exchange.fetch_balance()
-    vst = balance.get('total', {}).get('VST', 0)
-    bot.send_message(CHAT_ID, f"💰 **Dinero Disponible:** {vst:.2f} VST")
+@bot.message_handler(commands=['test_volatil'])
+def cmd_test_volatil(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.send_message(CHAT_ID, "🧪 Iniciando test de 20 USD en DOGE-USDT...")
+    try:
+        simbolo = 'DOGE-USDT'
+        ticker = exchange.fetch_ticker(simbolo)
+        precio = ticker['last']
+        
+        # Calculamos cantidad para que sean exactamente 20 USD
+        monto_usd = 20
+        cantidad = monto_usd / precio
+        
+        params = {'positionSide': 'LONG'}
+        order = exchange.create_market_buy_order(simbolo, cantidad, params)
+        
+        bot.send_message(CHAT_ID, f"✅ **TEST EXITOSO**\n💎 Moneda: {simbolo}\n💵 Invertido: ${monto_usd}\n📦 Cantidad: {cantidad:.2f} DOGE\n🚀 Ya la podés ver en /activos")
+    except Exception as e:
+        bot.send_message(CHAT_ID, f"❌ Error en test: {e}")
 
 if __name__ == "__main__":
-    try:
-        bot.send_message(CHAT_ID, "🚀 **SISTEMA TOTAL ACTIVO**\n- Compra/Venta IA: ON\n- Comando: /activos para ver todo.")
-    except: pass
-    
+    bot.send_message(CHAT_ID, "🚀 Bot iniciado. Probá el comando /test_volatil")
     threading.Thread(target=motor_trading, daemon=True).start()
     bot.polling(none_stop=True)
